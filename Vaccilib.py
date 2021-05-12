@@ -5,10 +5,21 @@
 
 import requests
 import datetime
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Bot
+from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, MessageHandler, Filters
+import json
+import schedule 
+import time
+
+global bot_token, bot, user_id
 
 # Config
+with open('tokens.txt', 'r') as tokens_file:
+    tokens = json.load(tokens_file)
+bot_token = tokens["Bot Token"]
+user_id = tokens["chat_id"]
 
 
 doctolib_lookup = [
@@ -47,11 +58,10 @@ doctolib_lookup = [
         "agenda_ids": "466751-407272-426239-446955-425187-426241-443550-412153-425189-410872-412152",
         "practice_ids": "162998",
         "visit_motive_ids": "2534276",
-    },
+    }
 ]
-bot_name = "LaDose"
-webhook_url = "https://discord.com/api/webhooks/XXXX/XXXXX"
-console_prints = False
+
+console_prints = True
 
 
 # Doctolib API
@@ -81,60 +91,62 @@ def check_availabilities(dc_item):
         ("destroy_temporary", "true"),
         ("limit", "4"),
     )
-
     response = requests.get(
         "https://www.doctolib.fr/availabilities.json", headers=headers, params=params
     )
-
     slots = response.json()
     return slots
 
 
-# Discord alert
+# Telegram alert
 
 
 def send_alert(content, e_title, e_desc, e_url):
-    data = {"content": content, "username": bot_name}
-
-    data["embeds"] = [{"description": e_desc, "title": e_title, "url": e_url}]
-
-    result = requests.post(webhook_url, json=data)
-
-    try:
-        result.raise_for_status()
-    except requests.exceptions.HTTPError as err:
-        if console_prints:
-            print(err)
-    else:
-        if console_prints:
-            print("Payload delivered successfully, code {}.".format(result.status_code))
+    message = "content: "+ content+" \ntitle: "+e_title+"\ndescription: "+ e_desc+"\nurl: "+e_url+""
+    bot.sendMessage(chat_id=user_id, text=message)
+    print("Message sent")
 
 
 # Main run
 
+def loop_get_slots():
+    print("Im here")
+    end_date = date.today() + timedelta(days=2)
 
-for dc_item in doctolib_lookup:
-    slots = check_availabilities(dc_item)
+    for dc_item in doctolib_lookup:
+        slots = check_availabilities(dc_item)
+        if slots["total"] > 0:
+            if console_prints:
+                print("Slots available")
+            for dates in slots["availabilities"]:
+                if len(dates["slots"]) > 0:
+                    slot_times = [
+                        str(
+                            datetime.strptime(
+                                stime["start_date"].split("+")[0], "%Y-%m-%dT%H:%M:%S.%f"
+                            ).time()
+                        )
+                        for stime in dates["slots"]
+                    ]
+                    if end_date> datetime.strptime(dates["date"],'%Y-%m-%d').date():
+                        send_alert(
+                            content="Dose de vaccin disponible",
+                            e_title=str(dates["date"]),
+                            e_desc="\n".join(slot_times),
+                            e_url=dc_item["url"],
+                        )
+        else:
+            if console_prints:
+                print("No slots")
 
-    if slots["total"] > 0:
-        if console_prints:
-            print("Slots available")
-        for dates in slots["availabilities"]:
-            if len(dates["slots"]) > 0:
-                slot_times = [
-                    str(
-                        datetime.strptime(
-                            stime["start_date"].split("+")[0], "%Y-%m-%dT%H:%M:%S.%f"
-                        ).time()
-                    )
-                    for stime in dates["slots"]
-                ]
-                send_alert(
-                    content="Dose de vaccin disponible",
-                    e_title=str(dates["date"]),
-                    e_desc="\n".join(slot_times),
-                    e_url=dc_item.url,
-                )
-    else:
-        if console_prints:
-            print("No slots")
+
+def main():
+    global bot
+    bot = Bot(token=bot_token)
+    schedule.every(15).seconds.do(loop_get_slots)
+    while True:
+        schedule.run_pending()
+        time.sleep(1)
+
+if __name__ == '__main__':
+    main()
